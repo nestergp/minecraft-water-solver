@@ -1,0 +1,190 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Minecraft Water Solver</title>
+<style>
+  :root { color-scheme: dark; --bg:#090909; --panel:#171717; --cell:#242424; --blue:#287dbb; --green:#15965a; --line:#414141; }
+  * { box-sizing:border-box }
+  body { margin:0; padding:18px; background:var(--bg); color:#f3f3f3; font:15px system-ui, sans-serif; }
+  main { max-width:760px; margin:auto; }
+  .top,.row { display:flex; align-items:center; justify-content:space-between; gap:12px; }
+  .top { margin-bottom:18px; font-weight:700; font-size:18px; }
+  .pill { color:#00d879; background:#062516; padding:5px 10px; border-radius:20px; font-size:12px; }
+  .muted { color:#aaa; font-size:13px; }
+  .board { display:grid; grid-template-columns:repeat(10,minmax(0,1fr)); gap:4px; margin:14px 0 10px; }
+  .cell { aspect-ratio:1; min-width:0; border:1px solid var(--line); border-radius:4px; background:var(--cell); color:white; font-size:12px; cursor:pointer; }
+  .cell.target { background:var(--blue); border-color:#55b8ff; }
+  .cell.seed { background:var(--green); border-color:#49d89a; }
+  .legend { display:flex; flex-wrap:wrap; gap:16px; margin:10px 0 22px; color:#bbb; font-size:13px; }
+  .dot { display:inline-block; width:9px; height:9px; border-radius:50%; margin-right:5px; }
+  .section { margin:18px 0; }
+  input[type=range] { width:100%; accent-color:white; }
+  button,select { border:1px solid #444; border-radius:24px; padding:11px 15px; background:#171717; color:#fff; cursor:pointer; }
+  button.primary { background:#eee; color:#111; border-color:#eee; }
+  button:disabled { opacity:.5; cursor:default; }
+  .actions { display:flex; gap:8px; }
+  .actions button { flex:1; }
+  .result { margin-top:20px; padding-top:18px; border-top:1px solid #333; }
+  .stats { display:grid; grid-template-columns:1fr 1fr; gap:10px; margin:14px 0; }
+  .stat { background:var(--panel); border-radius:10px; padding:12px; }
+  .stat strong { display:block; font-size:25px; margin-top:4px; }
+  .ok { color:#00d879; }
+  .err { color:#ff7777; }
+  .coords { line-height:1.9; }
+  @media(max-width:420px){ body{padding:12px}.board{gap:3px}.cell{border-radius:3px} }
+</style>
+</head>
+<body>
+<main>
+  <div class="top"><span>Minecraft Water Solver</span><span class="pill">10 × 10 · Java</span></div>
+  <div class="row"><span class="muted">Отмечено клеток</span><strong id="count">0</strong></div>
+  <div class="muted" style="margin-top:10px">Нажми на клетки ямы, в которых в итоге должны быть блоки-источники.</div>
+  <div id="board" class="board" aria-label="Поле 10 на 10"></div>
+  <div class="legend">
+    <span><i class="dot" style="background:var(--blue)"></i>Целевая клетка</span>
+    <span><i class="dot" style="background:var(--green)"></i>Начальный источник</span>
+    <span><i class="dot" style="background:var(--cell)"></i>Пусто</span>
+  </div>
+  <div class="section">
+    <div class="row"><strong>Количество ведер</strong><strong id="bucketLabel">9</strong></div>
+    <input id="buckets" type="range" min="6" max="12" value="9" step="1">
+  </div>
+  <div class="actions">
+    <button id="clear">Очистить</button>
+    <button id="solve" class="primary">Найти источники</button>
+  </div>
+  <div id="result" class="result" hidden></div>
+  <p class="muted" style="margin-top:20px">
+    Модель этой версии: новая целевая клетка становится источником, если у неё уже есть минимум два соседних источника по горизонтали/вертикали. Диагонали не учитываются. Предполагается твёрдый пол под всеми клетками.
+  </p>
+  <p class="muted">
+    Важно: это упрощённая модель образования источников, а не полная симуляция потока Minecraft Java Edition. Для точного соответствия серверу нужно также учитывать правила течения, соседние твёрдые блоки и gamerule waterSourceConversion.
+  </p>
+</main>
+<script>
+(() => {
+  const N = 10, board = document.getElementById('board');
+  const countEl = document.getElementById('count');
+  const bucketEl = document.getElementById('buckets');
+  const bucketLabel = document.getElementById('bucketLabel');
+  const resultEl = document.getElementById('result');
+  const cells = new Set();
+  let lastSeeds = new Set();
+
+  function neighbors(p) {
+    const r = Math.floor(p / N), c = p % N, out = [];
+    if (r > 0) out.push(p - N);
+    if (r < N - 1) out.push(p + N);
+    if (c > 0) out.push(p - 1);
+    if (c < N - 1) out.push(p + 1);
+    return out;
+  }
+
+  function simulate(seeds, targets) {
+    const active = new Set(seeds);
+    let changed = true;
+    while (changed) {
+      changed = false;
+      for (const p of targets) {
+        if (active.has(p)) continue;
+        let adjacentSources = 0;
+        for (const q of neighbors(p)) if (active.has(q)) adjacentSources++;
+        if (adjacentSources >= 2) {
+          active.add(p);
+          changed = true;
+        }
+      }
+    }
+    return active;
+  }
+
+  // Эвристический beam search. Он быстро ищет подходящий вариант,
+  // но не гарантирует математически минимальное число ведер.
+  function findSolution(targets, maxBuckets, beamWidth = 700) {
+    if (!targets.length) return { error: 'Сначала отметь клетки ямы.' };
+    const targetSet = new Set(targets);
+    let beam = [{ seeds: [], active: new Set() }];
+
+    for (let depth = 1; depth <= Math.min(maxBuckets, targets.length); depth++) {
+      const next = new Map();
+      for (const state of beam) {
+        for (const p of targets) {
+          if (state.seeds.includes(p) || state.active.has(p)) continue;
+          const seeds = [...state.seeds, p];
+          const active = simulate(seeds, targetSet);
+          if (active.size === targetSet.size) return { seeds, active };
+          const key = [...active].sort((a,b)=>a-b).join(',');
+          const frontier = targets.reduce((sum, x) => {
+            if (active.has(x)) return sum;
+            return sum + (neighbors(x).filter(q => active.has(q)).length === 1 ? 1 : 0);
+          }, 0);
+          const score = active.size + frontier * 0.18;
+          const old = next.get(key);
+          if (!old || old.score < score) next.set(key, { seeds, active, score });
+        }
+      }
+      beam = [...next.values()]
+        .sort((a,b) => b.score - a.score || a.seeds.length - b.seeds.length)
+        .slice(0, beamWidth);
+      if (!beam.length) break;
+    }
+    return { error: 'Не удалось найти решение в пределах выбранного количества ведер. Эвристический поиск не доказывает, что решения не существует.' };
+  }
+
+  function render() {
+    board.innerHTML = '';
+    for (let p = 0; p < 100; p++) {
+      const b = document.createElement('button');
+      b.type = 'button';
+      b.className = 'cell' + (lastSeeds.has(p) ? ' seed' : cells.has(p) ? ' target' : '');
+      b.textContent = lastSeeds.has(p) ? '●' : cells.has(p) ? '■' : '';
+      b.title = `Строка ${Math.floor(p/10)+1}, столбец ${p%10+1}`;
+      b.setAttribute('aria-label', b.title);
+      b.addEventListener('click', () => {
+        if (cells.has(p)) cells.delete(p); else cells.add(p);
+        lastSeeds.clear();
+        resultEl.hidden = true;
+        countEl.textContent = cells.size;
+        render();
+      });
+      board.appendChild(b);
+    }
+  }
+
+  bucketEl.addEventListener('input', () => bucketLabel.textContent = bucketEl.value);
+  document.getElementById('clear').addEventListener('click', () => {
+    cells.clear(); lastSeeds.clear(); countEl.textContent = '0'; resultEl.hidden = true; render();
+  });
+  document.getElementById('solve').addEventListener('click', () => {
+    const targets = [...cells].sort((a,b)=>a-b);
+    const result = findSolution(targets, Number(bucketEl.value));
+    resultEl.hidden = false;
+    if (result.error) {
+      lastSeeds.clear();
+      resultEl.innerHTML = `<strong class="err">Решение не найдено</strong><p>${result.error}</p>`;
+    } else {
+      lastSeeds = new Set(result.seeds);
+      const coords = result.seeds.map(p => `Строка ${Math.floor(p/10)+1}, столбец ${p%10+1}`);
+      resultEl.innerHTML = `
+        <strong class="ok">Все отмеченные клетки покрыты моделью</strong>
+        <div class="stats">
+          <div class="stat"><span class="muted">Начальных ведер</span><strong class="ok">${result.seeds.length}</strong></div>
+          <div class="stat"><span class="muted">Источников в итоге</span><strong>${result.active.size}/${targets.length}</strong></div>
+        </div>
+        <strong>Координаты начальных источников</strong>
+        <div class="coords">${coords.map((x,i)=>`${i+1}. ${x}`).join('<br>')}</div>
+        <button id="copy" style="margin-top:12px">Скопировать координаты</button>`;
+      document.getElementById('copy').addEventListener('click', async () => {
+        await navigator.clipboard.writeText(coords.join('\n'));
+        document.getElementById('copy').textContent = 'Скопировано';
+      });
+    }
+    render();
+  });
+  render();
+})();
+</script>
+</body>
+</html>
