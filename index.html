@@ -14,7 +14,7 @@
   .pill { color:#00d879; background:#062516; padding:5px 10px; border-radius:20px; font-size:12px; }
   .muted { color:#aaa; font-size:13px; }
   .board { display:grid; grid-template-columns:repeat(10,minmax(0,1fr)); gap:4px; margin:14px 0 10px; }
-  .cell { aspect-ratio:1; min-width:0; border:1px solid var(--line); border-radius:4px; background:var(--cell); color:white; font-size:12px; cursor:pointer; }
+  .cell { touch-action:none; user-select:none; -webkit-user-select:none; aspect-ratio:1; min-width:0; border:1px solid var(--line); border-radius:4px; background:var(--cell); color:white; font-size:12px; cursor:pointer; }
   .cell.target { background:var(--blue); border-color:#55b8ff; }
   .cell.seed { background:var(--green); border-color:#49d89a; }
   .legend { display:flex; flex-wrap:wrap; gap:16px; margin:10px 0 22px; color:#bbb; font-size:13px; }
@@ -56,12 +56,6 @@
     <button id="solve" class="primary">Найти источники</button>
   </div>
   <div id="result" class="result" hidden></div>
-  <p class="muted" style="margin-top:20px">
-    Модель этой версии: новая целевая клетка становится источником, если у неё уже есть минимум два соседних источника по горизонтали/вертикали. Диагонали не учитываются. Предполагается твёрдый пол под всеми клетками.
-  </p>
-  <p class="muted">
-    Важно: это упрощённая модель образования источников, а не полная симуляция потока Minecraft Java Edition. Для точного соответствия серверу нужно также учитывать правила течения, соседние твёрдые блоки и gamerule waterSourceConversion.
-  </p>
 </main>
 <script>
 (() => {
@@ -72,6 +66,7 @@
   const resultEl = document.getElementById('result');
   const cells = new Set();
   let lastSeeds = new Set();
+  let painting = false, paintValue = true;
 
   function neighbors(p) {
     const r = Math.floor(p / N), c = p % N, out = [];
@@ -142,17 +137,33 @@
       b.textContent = lastSeeds.has(p) ? '●' : cells.has(p) ? '■' : '';
       b.title = `Строка ${Math.floor(p/10)+1}, столбец ${p%10+1}`;
       b.setAttribute('aria-label', b.title);
-      b.addEventListener('click', () => {
-        if (cells.has(p)) cells.delete(p); else cells.add(p);
-        lastSeeds.clear();
-        resultEl.hidden = true;
-        countEl.textContent = cells.size;
-        render();
+      b.addEventListener('pointerdown', (event) => {
+        if (event.pointerType === 'mouse' && event.button !== 0) return;
+        event.preventDefault();
+        painting = true;
+        paintValue = !cells.has(p);
+        applyPaint(p);
+      });
+      b.addEventListener('pointerenter', () => {
+        if (painting) applyPaint(p);
       });
       board.appendChild(b);
     }
   }
 
+  function applyPaint(p) {
+    if (paintValue) cells.add(p); else cells.delete(p);
+    lastSeeds.clear();
+    resultEl.hidden = true;
+    countEl.textContent = cells.size;
+    const b = board.children[p];
+    if (b) {
+      b.className = 'cell' + (cells.has(p) ? ' target' : '');
+      b.textContent = cells.has(p) ? '■' : '';
+    }
+  }
+  window.addEventListener('pointerup', () => { painting = false; });
+  window.addEventListener('pointercancel', () => { painting = false; });
   bucketEl.addEventListener('input', () => bucketLabel.textContent = bucketEl.value);
   document.getElementById('clear').addEventListener('click', () => {
     cells.clear(); lastSeeds.clear(); countEl.textContent = '0'; resultEl.hidden = true; render();
